@@ -1,0 +1,66 @@
+import pandas as pd
+from numpy import nan
+
+# create main df for DDEF's and the Disposition Obligation
+new_df = xl("'DDEF Format Report- 7.6.26'!$Z$2:$BH$60000", headers=True) #Change this sheet name
+dob_df = xl("'Disposition Obligation'!$C$2:$L$60000", headers=True)
+
+# clean data (dropping dead/NA values)
+new_df.dropna(how='all', inplace=True)
+dob_df.dropna(how='all', inplace=True)
+
+# filter the DDEF's so that the property column (column Z) is FC1SMS
+# This also filters by starting pin code - starts with N694 -
+new_filtered_df = new_df[new_df.iloc[:, 0] == 'FC1SMS']
+new_filtered_df = new_filtered_df[new_filtered_df.iloc[:,8].astype(str).str.startswith('N694')]
+new_filtered_df = new_filtered_df[new_filtered_df.iloc[:, -1].fillna('').isin(['DA', 'E1', ''])]
+
+# transfer to a set to get unique PIINs
+DDEF_piins_list = sorted(list(set(new_filtered_df.iloc[:, 8])))
+
+# create "inventory list" dictionary for cost and maps it to the pin (Column C and Column L)
+dob_cost_dict = pd.Series(dob_df.iloc[:,-1].values, index=dob_df.iloc[:, 0]).to_dict() 
+
+# dictionaries for the filtered DDEF report costs. It pulls cost from column 4 from Z (AD) and maps it to pin
+new_amt_paid_dict = pd.Series(new_filtered_df.iloc[:, 4].values, index=new_filtered_df.iloc[:,8]).to_dict()
+
+# function that compares costs 
+def compare_costs(piin, amt_paid_dict, cost_dict):
+    amt_paid = amt_paid_dict.get(piin, 0)
+    total_cost = cost_dict.get(piin, 'Not Found')
+    
+    if total_cost == 'Not Found':
+        return 'No Cost Data Found :('
+    
+    try:
+        # divides the amount automatically
+        amt_paid_val = (float(amt_paid) / 100)
+        total_cost_val = float(total_cost)
+        
+        # compare
+        if amt_paid_val > total_cost_val:
+            return 'Amt Paid is Higher'
+        elif amt_paid_val < total_cost_val:
+            return 'Amt Paid is Lower'
+        else:
+            return nan # Returns nan for matches so we can drop them easily
+            
+    except (ValueError, TypeError):
+        return 'Error: Non-numeric data'
+
+# Generate the notes for each PIIN
+cost_notes = [compare_costs(piin, new_amt_paid_dict, dob_cost_dict) for piin in DDEF_piins_list]
+
+# --- NEW LOGIC TO FILTER AND DISPLAY NON-MATCHES ---
+
+# 1. Combine the PIINs and their comparison results into a new DataFrame
+results_df = pd.DataFrame({
+    'PIIN': DDEF_piins_list,
+    'Discrepancy Note': cost_notes
+})
+
+# 2. Filter out the matches. Since matches return 'nan', dropna() will remove them.
+non_matches_df = results_df.dropna(subset=['Discrepancy Note'])
+
+# 3. Return the filtered DataFrame to Excel
+non_matches_df
