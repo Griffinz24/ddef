@@ -1,0 +1,88 @@
+import pandas as pd
+import numpy as np
+
+new_df = xl("NewDDEF!$R$2:$BV$60000", headers=True)
+dob_df = xl("Disposition_Obligation!$C$2:$L$60000", headers=True)
+
+new_df.dropna(how='all', inplace=True)
+dob_df.dropna(how='all', inplace=True)
+
+new_filt = new_df[new_df.iloc[:, 8] == 'FC1SMS']
+new_filt = new_filt[new_filt.iloc[:, 16].astype(str).str.startswith('N694')]
+
+dob_cost_dict = pd.Series(dob_df.iloc[:, -1].values, index=dob_df.iloc[:, 0]).to_dict()
+new_amt_paid_dict = pd.Series(new_filt.iloc[:, 12].values, index=new_filt.iloc[:, 16]).to_dict()
+
+details_dict = {}
+for _, row in new_filt.iterrows():
+    piin = row.iloc[16]
+    if piin not in details_dict:
+        details_dict[piin] = {
+            'Subhead': row.iloc[0],
+            'CLIN': row.iloc[19],
+            'Fund Code': row.iloc[42],
+            'SQN': row.iloc[-1]
+        }
+
+high, low, incompat, match = [], [], [], []
+
+for piin, details in details_dict.items():
+    amt_paid = new_amt_paid_dict.get(piin, 0)
+    total_cost = dob_cost_dict.get(piin, 'Not Found')
+    
+    sh = details.get('Subhead', '')
+    fc = details.get('Fund Code', '')
+    
+    row_data = {
+        'PIIN': piin,
+        'SQN': details.get('SQN', ''),
+        'Subhead': sh,
+        'CLIN': details.get('CLIN', ''),
+        'Fund Code': fc,
+        'Discrepancy': ''
+    }
+    
+    is_incompat = (sh == '52FA' and fc != 'DA') or (sh == '52FM' and fc != 'E1')
+    
+    if is_incompat:
+        row_data['Discrepancy'] = 'Incompatible Subhead/Fund Code'
+        incompat.append(row_data)
+        continue
+        
+    if total_cost != 'Not Found':
+        try:
+            a_val = float(amt_paid) / 100
+            t_val = float(total_cost)
+            
+            if a_val > t_val:
+                row_data['Discrepancy'] = 'Amt High'
+                high.append(row_data)
+            elif a_val < t_val:
+                row_data['Discrepancy'] = 'Amt Low'
+                low.append(row_data)
+            else:
+                row_data['Discrepancy'] = 'Match'
+                match.append(row_data)
+        except (ValueError, TypeError):
+            pass
+
+cols = ['PIIN', 'SQN', 'Subhead', 'CLIN', 'Fund Code', 'Discrepancy']
+df_high = pd.DataFrame(high, columns=cols)
+##df_low = pd.DataFrame(low, columns=cols) #low 
+df_incompat = pd.DataFrame(incompat, columns=cols)
+df_match = pd.DataFrame(match, columns=cols)
+
+max_len = max(len(df_high), len(df_incompat), len(df_match)) #len(df_low) was included
+
+def pad_df(df, length):
+    return df.reindex(range(length))
+
+df_high = pad_df(df_high, max_len)
+#df_low = pad_df(df_low, max_len)
+df_incompat = pad_df(df_incompat, max_len)
+df_match = pad_df(df_match, max_len)
+
+empty = pd.DataFrame({"": [np.nan] * max_len})
+
+final_df = pd.concat([df_high, empty, df_incompat], axis=1) #df_low was included
+final_df
