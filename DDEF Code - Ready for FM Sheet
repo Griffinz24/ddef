@@ -1,0 +1,70 @@
+import pandas as pd
+from numpy import nan
+
+# Step 1: Create main DataFrames with the expanded range
+new_df = xl("NewDDEF!$A$2:$BV$60000", headers=True)
+dob_df = xl("Disposition_Obligation!$C$2:$L$60000", headers=True)
+seq_df = xl("SeqNbr!$A$2:$B$60000", headers=False)
+
+# Step 2: Clean data
+new_df.dropna(how='all', inplace=True)
+dob_df.dropna(how='all', inplace=True)
+seq_df.dropna(how='all', inplace=True)
+
+# Step 3: Initial filtering with updated column indices
+# Column R (Subhead) = index 17
+# Column Z (Property) = index 25
+# Column AD (Amt Paid) = index 29
+# Column AH (PIIN) = index 33
+# Column BH (Fund Code) = index 59
+
+# Filter for Property 'FC1SMS' (Column Z), 'N694' (Column AH)
+temp_filtered_df = new_df[new_df.iloc[:, 25] == 'FC1SMS'].copy()
+temp_filtered_df = temp_filtered_df[temp_filtered_df.iloc[:, 33].astype(str).str.startswith('N694')]
+
+# Step 4: Apply the specific Subhead and Fund Code pairing logic
+# Condition 1: Subhead (Col R) is '52FM' AND Fund Code (Col BH) is 'E1'
+condition1 = (temp_filtered_df.iloc[:, 17] == '52FM') & (temp_filtered_df.iloc[:, 59] == 'E1')
+# Condition 2: Subhead (Col R) is '52FA' AND Fund Code (Col BH) is 'DA'
+condition2 = (temp_filtered_df.iloc[:, 17] == '52FA') & (temp_filtered_df.iloc[:, 59] == 'DA')
+
+# Combine conditions to get the final pre-filtered set of rows
+final_filtered_df = temp_filtered_df[condition1 | condition2]
+
+# Step 5: Create dictionaries for cost comparison and sequence numbers
+dob_cost_dict = pd.Series(dob_df.iloc[:, -1].values, index=dob_df.iloc[:, 0]).to_dict()
+new_amt_paid_dict = pd.Series(final_filtered_df.iloc[:, 29].values, index=final_filtered_df.iloc[:, 33]).to_dict()
+seq_dict = pd.Series(seq_df.iloc[:, 1].values, index=seq_df.iloc[:, 0]).to_dict()
+unique_piins = final_filtered_df.iloc[:, 33].unique()
+
+# Step 6: Identify the PIINs where the amount paid is lower or equal
+piins_with_lower_amt = []
+for piin in unique_piins:
+    amt_paid = new_amt_paid_dict.get(piin, 0)
+    total_cost = dob_cost_dict.get(piin)
+    
+    if total_cost is not None:
+        try:
+            amt_paid_val = float(amt_paid) / 100
+            total_cost_val = float(total_cost)
+            
+            # The core comparison logic this has been ammended to include matching as well
+            if amt_paid_val <= total_cost_val:
+                piins_with_lower_amt.append(piin)
+        except (ValueError, TypeError):
+            # Ignore PIINs where cost or amount is not a valid number
+            continue
+
+# Step 7: Filter the DataFrame to get the full rows for the matching PIINs
+# Use .copy() to ensure we can safely add the Sequence Number column
+final_output_df = final_filtered_df[final_filtered_df.iloc[:, 33].isin(piins_with_lower_amt)].copy()
+
+# Step 8: Add the Sequence Number to the far right
+# This maps the Sequence Number using the PIIN column (index 33)
+final_output_df.iloc[:,73] = final_output_df.iloc[:, 33].map(seq_dict)
+
+# Step 9: Remove the far-left index values 
+final_output_df.reset_index(drop=True, inplace=True)
+
+# Step 10: Return the final DataFrame to Excel
+final_output_df
