@@ -1,0 +1,96 @@
+import pandas as pd
+
+# Create DataFrames from your Excel ranges from column Z to AH.
+new_df = xl("NewDDEF!$Z$2:$BH$60000", headers=True) #UPDATE THIS SHEET NAME
+old_df = xl("OldDDEF!$Z$2:$BH$60000", headers=True) #UPDATE THIS SHEET NAME
+
+# Reads columns A (PIIN) and B (SqnNum) from the 'SEQ NBR' sheet.
+sqn_df = xl("SeqNbr!A2:B60000", headers=True)
+
+# Creates the range for verifying cost exceedance (Column C to Column L)
+dob_df = xl("Disposition_Obligation!C2:L60000", headers=True)
+
+# --- Data Cleaning Step ---
+new_df.dropna(how='all', inplace=True)
+old_df.dropna(how='all', inplace=True)
+sqn_df.dropna(how='all', inplace=True)
+dob_df.dropna(how="all", inplace=True)
+
+# --- Filtering Step ---
+# Filter to only include rows where the 'property' column (Column Z, index 0) is 'FC1SMS'.
+new_filtered_df = new_df[new_df.iloc[:, 0] == 'FC1SMS']
+new_filtered_df = new_filtered_df[new_filtered_df.iloc[:,8].astype(str).str.startswith('N694')]
+new_filtered_df = new_filtered_df[new_filtered_df.iloc[:, -1].fillna('').isin(['DA', 'E1', ''])]
+
+
+old_filtered_df = old_df[old_df.iloc[:, 0] == 'FC1SMS']
+old_filtered_df = old_filtered_df[old_filtered_df.iloc[:,8].astype(str).str.startswith('N694')]
+old_filtered_df = old_filtered_df[old_filtered_df.iloc[:, -1].fillna('').isin(['DA', 'E1', ''])]
+
+# --- Find the differences ---
+# We use .iloc[:, 8] to select the 9th column of our range (AH) by its position.
+new_piins_set = set(new_filtered_df.iloc[:, 8])
+old_piins_set = set(old_filtered_df.iloc[:, 8])
+
+added_piins = sorted(list(new_piins_set.difference(old_piins_set)))
+deleted_piins = sorted(list(old_piins_set.difference(new_piins_set)))
+
+
+# --- VLOOKUP Implementation (Sequence Numbers) ---
+sqn_lookup_dict = pd.Series(sqn_df.iloc[:, 1].values, index=sqn_df.iloc[:, 0]).to_dict()
+
+new_sqn_nums = [sqn_lookup_dict.get(piin, 'Not Found') for piin in added_piins]
+deleted_sqn_nums = [sqn_lookup_dict.get(piin, 'Not Found') for piin in deleted_piins]
+
+
+# --- Cost Comparison Logic ---
+# Create a dictionary for Total Cost mapping PIIN (Col C, index 0) to Total Cost (Col L, index -1)
+dob_cost_dict = pd.Series(dob_df.iloc[:, -1].values, index=dob_df.iloc[:, 0]).to_dict()
+
+# Create a dictionary for Amount Paid from the NEW report (Col AD, index 4)
+new_amt_paid_dict = pd.Series(new_filtered_df.iloc[:, 4].values, index=new_filtered_df.iloc[:, 8]).to_dict()
+
+# --- NEW: Create a dictionary for Amount Paid from the OLD report (Col AD, index 4)
+old_amt_paid_dict = pd.Series(old_filtered_df.iloc[:, 4].values, index=old_filtered_df.iloc[:, 8]).to_dict()
+
+# Function to perform the cost comparison to avoid repeating code
+def compare_costs(piin, amt_paid_dict, cost_dict):
+    amt_paid = amt_paid_dict.get(piin, 0)
+    total_cost = cost_dict.get(piin, 'Not Found')
+    
+    if total_cost == 'Not Found':
+        return 'No Cost Data Found'
+    try:
+        # Divide amount paid by 100, then round both values to 2 decimals
+        amt_paid_val = round((float(amt_paid) / 100), 2)
+        total_cost_val = round(float(total_cost), 2)
+        
+        # Compare the calculated values
+        if amt_paid_val > total_cost_val:
+            return 'Amt Paid is Higher'
+        elif amt_paid_val < total_cost_val:
+            return 'Amt Paid is Lower'
+        else:
+            return 'Match'
+    except (ValueError, TypeError):
+        # Triggers if the cell contains text instead of a number
+        return 'Error: Non-numeric data'
+
+# Run comparison for both New and Finished PIINs
+new_cost_notes = [compare_costs(piin, new_amt_paid_dict, dob_cost_dict) for piin in added_piins]
+deleted_cost_notes = [compare_costs(piin, old_amt_paid_dict, dob_cost_dict) for piin in deleted_piins]
+
+
+# --- Create a clean output DataFrame with all the new columns ---
+diff = pd.DataFrame({
+    'New PIINs': pd.Series(added_piins),
+    'New SqnNum': pd.Series(new_sqn_nums),
+    'New PIINs Cost Check': pd.Series(new_cost_notes),
+    '': pd.Series(dtype='object'),  # This creates an empty column for spacing
+    'Finished PIINs': pd.Series(deleted_piins),
+    'Finished SqnNum': pd.Series(deleted_sqn_nums),
+    'Finished PIINs Cost Check': pd.Series(deleted_cost_notes) # NEW COLUMN
+})
+
+# Display the result
+diff
